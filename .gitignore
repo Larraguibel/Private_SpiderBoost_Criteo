@@ -1,1 +1,4 @@
 data/criteo_5M.parquet
+.venv
+src/__pycache__
+

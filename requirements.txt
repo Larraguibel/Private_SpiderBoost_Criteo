@@ -1,0 +1,9 @@
+dp-accounting
+jax
+jaxlib
+numpy
+pandas
+pyarrow
+scikit-learn
+matplotlib
+jupyter
