@@ -356,6 +356,11 @@ def train(
         history.grad_norm.append(grad_norm)
         history.train_loss.append(train_loss_val)
 
+        # ||w_t - w_{t-1}|| — the step distance the variation kernel used to
+        # scale its Gaussian noise. Captured before the swap below. Kept as a
+        # lazy JAX scalar; only forced to host at progress steps.
+        delta_w_jax = psb.pytree_global_norm(psb.pytree_sub(params, params_prev))
+
         # Update: w_{t+1} = w_t - eta * grad_estimate
         params_prev = params
         params = psb.sgd_update(params, grad_estimate, config.eta)
@@ -375,12 +380,23 @@ def train(
             test_loss_val = evaluate_loss(params, x_test, y_test)
             history.test_loss_steps.append(t)
             history.test_loss.append(test_loss_val)
+            # Realized Gaussian noise std added at *this* step:
+            #   anchor   : sigma1 (constant).
+            #   variation: min(sigma2 * ||w_t - w_{t-1}||, sigma2_hat).
+            delta_w = float(delta_w_jax)
             kind = "ANCHOR" if is_anchor else "var"
             last_auc = history.eval_auc[-1] if history.eval_auc else float("nan")
+            if is_anchor:
+                realized_noise_std = float(noise_scales.sigma1)
+            else:
+                realized_noise_std = float(
+                    min(noise_scales.sigma2 * delta_w, noise_scales.sigma2_hat)
+                )
             print(
                 f"  step {t:4d}/{config.T}  [{kind:6s}]  "
                 f"loss={train_loss_val:.4f}  test_loss={test_loss_val:.4f}  "
-                f"||∇_t||={grad_norm:.4f}  last_auc={last_auc:.4f}"
+                f"||∇_t||={grad_norm:.4f}  ||Δw||={delta_w:.4e}  "
+                f"noise_std={realized_noise_std:.4e}  last_auc={last_auc:.4f}"
             )
 
     history.wall_time_s = time.perf_counter() - t0

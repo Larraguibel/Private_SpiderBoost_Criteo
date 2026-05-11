@@ -201,6 +201,82 @@ def plot_auc_history(eval_steps: Sequence[int], eval_auc: Sequence[float],
     return fig
 
 
+def plot_epsilon_sweep(epsilons: Sequence[float],
+                       auc_random: Sequence[float],
+                       auc_final: Sequence[float],
+                       save_path: str | Path) -> plt.Figure:
+    """Plot test ROC-AUC vs. privacy budget ε (privacy-utility tradeoff).
+
+    Parameters
+    ----------
+    epsilons : Sequence[float]
+        The ε values that were swept.
+    auc_random : Sequence[float]
+        Test ROC-AUC of the random iterate ``w̄`` (Algorithm 2 output rule),
+        aligned with ``epsilons``.
+    auc_final : Sequence[float]
+        Test ROC-AUC of the final iterate ``w_T``, aligned with ``epsilons``.
+    save_path : str or pathlib.Path
+        Output PNG location.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    """
+    save_path = _ensure_parent(save_path)
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.plot(epsilons, auc_random, marker="o", lw=1.4, color="tab:green",
+            label=r"$\bar w$ (random iterate)")
+    ax.plot(epsilons, auc_final, marker="s", lw=1.4, color="tab:blue",
+            label=r"$w_T$ (final iterate)")
+    ax.set_xscale("log")
+    ax.set_xlabel(r"Privacy budget $\varepsilon$ (log scale)")
+    ax.set_ylabel("Test ROC-AUC")
+    ax.set_title("Privacy-utility tradeoff")
+    ax.legend(loc="lower right")
+    ax.grid(True, alpha=0.3, which="both")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    return fig
+
+
+def plot_q_sweep(q_values: Sequence[int],
+                 auc_random: Sequence[float],
+                 auc_final: Sequence[float],
+                 save_path: str | Path) -> plt.Figure:
+    """Plot test ROC-AUC vs. phase length ``q``.
+
+    Parameters
+    ----------
+    q_values : Sequence[int]
+        The phase-length values that were swept.
+    auc_random : Sequence[float]
+        Test ROC-AUC of ``w̄`` aligned with ``q_values``.
+    auc_final : Sequence[float]
+        Test ROC-AUC of ``w_T`` aligned with ``q_values``.
+    save_path : str or pathlib.Path
+        Output PNG location.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    """
+    save_path = _ensure_parent(save_path)
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.plot(q_values, auc_random, marker="o", lw=1.4, color="tab:green",
+            label=r"$\bar w$ (random iterate)")
+    ax.plot(q_values, auc_final, marker="s", lw=1.4, color="tab:blue",
+            label=r"$w_T$ (final iterate)")
+    ax.set_xlabel("Phase length $q$")
+    ax.set_ylabel("Test ROC-AUC")
+    ax.set_title("Phase-length tradeoff (fixed $\\varepsilon$)")
+    ax.legend(loc="best")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    return fig
+
+
 def plot_hyperparameter_summary(config: dict,
                                 save_path: str | Path) -> plt.Figure:
     """Render a run's hyperparameters as a one-page table figure.
