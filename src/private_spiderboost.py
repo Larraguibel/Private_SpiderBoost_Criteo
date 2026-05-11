@@ -88,7 +88,7 @@ def per_sample_clip(per_sample_pytree, clip_norm: float):
     -------
     clipped : pytree of jax.Array
         Same structure as the input. Each per-sample slice has been
-        rescaled so its global ``ℓ_2`` norm is at most ``clip_norm``.
+        rescaled so its global ``l_2`` norm is at most ``clip_norm``.
     """
     norms = per_sample_norms(per_sample_pytree)
     factor = jnp.minimum(1.0, clip_norm / (norms + 1e-12))  # (B,)
@@ -187,7 +187,7 @@ class StepOutput(NamedTuple):
     grad_estimate : pytree
         New running gradient estimate ``∇_t``.
     grad_norm : jax.Array, shape ()
-        Global ``ℓ_2`` norm of ``grad_estimate`` (logged every step).
+        Global ``l_2`` norm of ``grad_estimate`` (logged every step).
     """
 
     grad_estimate: object
