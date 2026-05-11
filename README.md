@@ -25,7 +25,7 @@ Training is divided into phases of length `q`. Within each phase:
 - **Anchor step** (`t mod q == 0`): draw a fresh Poisson mini-batch of
   expected size `b_1`, compute per-sample gradients of the loss, clip
   each to ‖·‖₂ ≤ `L₀`, average, and add Gaussian noise of std `σ_1`.
-  This is a fresh privatised gradient estimate.
+  This is a fresh privatized gradient estimate.
 - **Variation steps** (the next `q - 1` steps): draw a smaller Poisson
   mini-batch of expected size `b_2`, compute per-sample gradient
   *differences* `∇f(w_t; x) − ∇f(w_{t-1}; x)`, clip each to
