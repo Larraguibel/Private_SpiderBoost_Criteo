@@ -22,8 +22,9 @@ def _ensure_parent(save_path: str | Path) -> Path:
 
 
 def plot_training_loss(loss_history: Sequence[float],
-                       save_path: str | Path) -> plt.Figure:
-    """Plot mean BCE loss vs. SpiderBoost step.
+                       save_path: str | Path,
+                       window: int = 50) -> plt.Figure:
+    """Plot mean BCE loss vs. SpiderBoost step with a rolling-window overlay.
 
     Parameters
     ----------
@@ -31,6 +32,9 @@ def plot_training_loss(loss_history: Sequence[float],
         Per-step training loss (anchor-batch BCE; see :class:`train.TrainHistory`).
     save_path : str or pathlib.Path
         Where the PNG is written.
+    window : int, default 50
+        Width of the rolling-mean window. Set ``window <= 1`` to disable the
+        overlay.
 
     Returns
     -------
@@ -39,14 +43,57 @@ def plot_training_loss(loss_history: Sequence[float],
 
     Notes
     -----
-    The y-axis is linear; for very long runs consider switching to log.
+    The y-axis is linear; for very long runs consider switching to log. The
+    smoothed line uses ``numpy.convolve(..., mode='valid')`` so its length is
+    ``N - window + 1``; it is plotted centered on the window midpoint
+    ``(window - 1) / 2`` so it visually aligns with the raw curve.
     """
     save_path = _ensure_parent(save_path)
+    loss = np.asarray(loss_history, dtype=float)
+    n = len(loss)
     fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(np.arange(len(loss_history)), loss_history, lw=1.0)
+    ax.plot(np.arange(n), loss, lw=1.0, color="grey", alpha=0.3,
+            label="per-step")
+    if window > 1 and n >= window:
+        kernel = np.ones(window, dtype=float) / window
+        smoothed = np.convolve(loss, kernel, mode="valid")
+        x_smoothed = np.arange(len(smoothed)) + (window - 1) / 2.0
+        ax.plot(x_smoothed, smoothed, lw=1.6, color="tab:blue",
+                label=f"rolling mean (w={window})")
+        ax.legend(loc="upper right")
     ax.set_xlabel("Step")
     ax.set_ylabel("Mean BCE on batch")
     ax.set_title("Training loss")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    return fig
+
+
+def plot_test_loss(test_loss_steps: Sequence[int],
+                   test_loss: Sequence[float],
+                   save_path: str | Path) -> plt.Figure:
+    """Plot mean BCE on the test set vs. step.
+
+    Parameters
+    ----------
+    test_loss_steps : Sequence[int]
+        SpiderBoost step at which each test loss was computed.
+    test_loss : Sequence[float]
+        Mean BCE values aligned with ``test_loss_steps``.
+    save_path : str or pathlib.Path
+        Output PNG location.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    """
+    save_path = _ensure_parent(save_path)
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(test_loss_steps, test_loss, marker="o", lw=1.2, color="tab:red")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Mean BCE on test set")
+    ax.set_title("Test loss over training")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(save_path, dpi=150)
