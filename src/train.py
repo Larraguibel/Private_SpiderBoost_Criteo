@@ -123,7 +123,7 @@ class TrainHistory:
         Mean BCE on the *anchor* mini-batch at each step (cheap proxy that
         does not require an extra pass over the data).
     grad_norm : list[float]
-        Global ``ℓ_2`` norm of the running estimate ``∇_t`` at each step.
+        Global ``l_2`` norm of the running estimate ``∇_t`` at each step.
     eval_steps : list[int]
         Step indices at which test ROC-AUC was computed.
     eval_auc : list[float]
