@@ -19,6 +19,7 @@ from sklearn.metrics import roc_auc_score
 
 from . import model as model_mod
 from . import private_spiderboost as psb
+from .device import resolve_device
 from .privacy_accountant import NoiseScales
 
 
@@ -97,6 +98,9 @@ class TrainConfig:
     eval_every_steps : int or None
         How often to evaluate test ROC-AUC (in steps). If ``None``, defaults
         to ``q``.
+    device : str
+        Target JAX device for all training computation. Accepts ``"cpu"``,
+        ``"gpu"``, or ``"cuda"`` (see :func:`src.device.resolve_device`).
     """
 
     epsilon: float = 3.0
@@ -111,6 +115,7 @@ class TrainConfig:
     hidden_dims: tuple[int, ...] = (64, 32)
     seed: int = 0
     eval_every_steps: int | None = None
+    device: str = "cpu"
 
 
 @dataclass
@@ -239,12 +244,19 @@ def train(
     gathered, and the result is padded to the JIT-fixed shape with a
     secondary mask passed to the kernel.
     """
+    dev = resolve_device(config.device)
+    x_train = jax.device_put(x_train, dev)
+    y_train = jax.device_put(y_train, dev)
+    x_test = jax.device_put(x_test, dev)
+    y_test = jax.device_put(y_test, dev)
+
     n, d = x_train.shape
     rng = np.random.default_rng(config.seed)
     key = jax.random.PRNGKey(config.seed + 1)
 
     key, sub = jax.random.split(key)
     params = model_mod.init_params(sub, d, config.hidden_dims)
+    params = jax.tree.map(lambda a: jax.device_put(a, dev), params)
 
     per_sample_grad_fn = jax.vmap(
         jax.grad(model_mod.per_sample_loss),
@@ -279,9 +291,10 @@ def train(
 
         if is_anchor:
             indices, mask_np = _sample_poisson_padded(rng, n, p1, b1_max)
-            x_batch = x_train[jnp.asarray(indices)]
-            y_batch = y_train[jnp.asarray(indices)]
-            mask = jnp.asarray(mask_np)
+            idx_dev = jax.device_put(jnp.asarray(indices), dev)
+            x_batch = x_train[idx_dev]
+            y_batch = y_train[idx_dev]
+            mask = jax.device_put(jnp.asarray(mask_np), dev)
             key, sub = jax.random.split(key)
             out = anchor_step_jit(
                 params, x_batch, y_batch, mask,
@@ -292,9 +305,10 @@ def train(
             train_loss_val = float(batch_loss_jit(params, x_batch, y_batch))
         else:
             indices, mask_np = _sample_poisson_padded(rng, n, p2, b2_max)
-            x_batch = x_train[jnp.asarray(indices)]
-            y_batch = y_train[jnp.asarray(indices)]
-            mask = jnp.asarray(mask_np)
+            idx_dev = jax.device_put(jnp.asarray(indices), dev)
+            x_batch = x_train[idx_dev]
+            y_batch = y_train[idx_dev]
+            mask = jax.device_put(jnp.asarray(mask_np), dev)
             key, sub = jax.random.split(key)
             out = variation_step_jit(
                 params, params_prev, grad_estimate,

@@ -3,6 +3,7 @@
 Modules
 -------
 data_loader        : Criteo parquet loader and preprocessing.
+device             : Resolve a device-name string (``cpu``/``cuda``/``gpu``).
 model              : Vanilla JAX MLP with LayerNorm.
 private_spiderboost: Algorithm 2 of Arora et al. (ICML 2023).
 privacy_accountant : Noise scale computation and (optional) RDP verification.

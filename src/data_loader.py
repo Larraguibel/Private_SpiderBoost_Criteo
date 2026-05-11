@@ -11,9 +11,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import NamedTuple
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
+
+from .device import resolve_device
 
 INT_COLS: list[str] = [f"I{i}" for i in range(1, 14)]
 LABEL_COL: str = "label"
@@ -50,6 +53,7 @@ def load_criteo(
     parquet_path: str | Path,
     test_fraction: float = 0.2,
     seed: int = 0,
+    device: str = "cpu",
 ) -> CriteoData:
     """Load the Criteo parquet, preprocess numerical features, and split.
 
@@ -61,6 +65,9 @@ def load_criteo(
         Fraction of rows to hold out for evaluation.
     seed : int, default 0
         Seed used for the deterministic train/test shuffle.
+    device : str, default ``"cpu"``
+        Target JAX device for the returned arrays. Accepts ``"cpu"``,
+        ``"gpu"``, or ``"cuda"`` (see :func:`src.device.resolve_device`).
 
     Returns
     -------
@@ -117,11 +124,12 @@ def load_criteo(
     x_train_np = (x_train_np - means) / stds
     x_test_np = (x_test_np - means) / stds
 
+    dev = resolve_device(device)
     return CriteoData(
-        x_train=jnp.asarray(x_train_np),
-        y_train=jnp.asarray(y_train),
-        x_test=jnp.asarray(x_test_np),
-        y_test=jnp.asarray(y_test),
+        x_train=jax.device_put(jnp.asarray(x_train_np), dev),
+        y_train=jax.device_put(jnp.asarray(y_train), dev),
+        x_test=jax.device_put(jnp.asarray(x_test_np), dev),
+        y_test=jax.device_put(jnp.asarray(y_test), dev),
         feature_means=means,
         feature_stds=stds,
     )
