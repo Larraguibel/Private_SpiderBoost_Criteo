@@ -133,6 +133,10 @@ class TrainHistory:
         Step indices at which test ROC-AUC was computed.
     eval_auc : list[float]
         Test ROC-AUC values (aligned with ``eval_steps``).
+    test_loss_steps : list[int]
+        Step indices at which mean BCE on the full test set was computed.
+    test_loss : list[float]
+        Mean BCE on the test set (aligned with ``test_loss_steps``).
     noise_scales : NoiseScales or None
         Computed noise scales for the run.
     wall_time_s : float
@@ -143,6 +147,8 @@ class TrainHistory:
     grad_norm: list[float] = field(default_factory=list)
     eval_steps: list[int] = field(default_factory=list)
     eval_auc: list[float] = field(default_factory=list)
+    test_loss_steps: list[int] = field(default_factory=list)
+    test_loss: list[float] = field(default_factory=list)
     noise_scales: NoiseScales | None = None
     wall_time_s: float = 0.0
 
@@ -171,6 +177,33 @@ class TrainResult(NamedTuple):
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
+
+
+def evaluate_loss(params, x_test: jnp.ndarray, y_test: jnp.ndarray,
+                  batch_size: int = 16384) -> float:
+    """Mean BCE on the full test set, streamed in batches.
+
+    Parameters
+    ----------
+    params : pytree
+        Model parameters.
+    x_test : jnp.ndarray, shape (n_test, d)
+    y_test : jnp.ndarray, shape (n_test,)
+    batch_size : int, default 16384
+        Inference batch size.
+
+    Returns
+    -------
+    loss : float
+        ``(1 / n_test) * sum_i BCE(forward(params, x_i), y_i)``.
+    """
+    n = x_test.shape[0]
+    total = 0.0
+    for start in range(0, n, batch_size):
+        end = min(start + batch_size, n)
+        b = end - start
+        total += b * float(model_mod.batch_loss(params, x_test[start:end], y_test[start:end]))
+    return total / n
 
 
 def evaluate_auc(params, x_test: jnp.ndarray, y_test: jnp.ndarray,
@@ -339,12 +372,15 @@ def train(
             history.eval_auc.append(auc)
 
         if progress_every and (t % progress_every == 0 or t == config.T):
+            test_loss_val = evaluate_loss(params, x_test, y_test)
+            history.test_loss_steps.append(t)
+            history.test_loss.append(test_loss_val)
             kind = "ANCHOR" if is_anchor else "var"
             last_auc = history.eval_auc[-1] if history.eval_auc else float("nan")
             print(
                 f"  step {t:4d}/{config.T}  [{kind:6s}]  "
-                f"loss={train_loss_val:.4f}  ||∇_t||={grad_norm:.4f}  "
-                f"last_auc={last_auc:.4f}"
+                f"loss={train_loss_val:.4f}  test_loss={test_loss_val:.4f}  "
+                f"||∇_t||={grad_norm:.4f}  last_auc={last_auc:.4f}"
             )
 
     history.wall_time_s = time.perf_counter() - t0
