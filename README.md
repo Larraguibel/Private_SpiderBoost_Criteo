@@ -50,30 +50,47 @@ private_spider_boost_criteo/
 ├── src/
 │   ├── __init__.py
 │   ├── data_loader.py
+│   ├── device.py
 │   ├── model.py
 │   ├── private_spiderboost.py
 │   ├── privacy_accountant.py
 │   ├── train.py
 │   └── visualization.py
 ├── notebooks/
-│   └── train_private_spiderboost.ipynb
+│   ├── train_private_spiderboost.ipynb
+│   ├── privacy_utility_tradeoff.ipynb
+│   └── phase_length_q_tradeoff.ipynb
 ├── figs/
+├── requirements.txt
 └── README.md
 ```
 
 ## How to run
 
-From the repository root, with a Python env that has
-`jax`, `pandas`, `pyarrow`, `scikit-learn`, `matplotlib`, `dp-accounting`,
-and `jupyter`:
+Install dependencies from [requirements.txt](requirements.txt) (e.g. in a
+fresh virtualenv):
 
 ```bash
-JAX_PLATFORMS=cpu jupyter nbconvert --to notebook --execute --inplace \
-    implementaciones/private_spider_boost_criteo/notebooks/train_private_spiderboost.ipynb
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Or open the notebook interactively. Output figures are written to
-`figs/`.
+Then open any of the notebooks in `notebooks/`:
+
+- [notebooks/train_private_spiderboost.ipynb](notebooks/train_private_spiderboost.ipynb) — single end-to-end run.
+- [notebooks/privacy_utility_tradeoff.ipynb](notebooks/privacy_utility_tradeoff.ipynb) — sweep `ε`, plot AUC vs ε.
+- [notebooks/phase_length_q_tradeoff.ipynb](notebooks/phase_length_q_tradeoff.ipynb) — sweep `q`, plot AUC vs q.
+
+Each notebook defines a `DEVICE = 'cpu'` cell near the top; change to
+`'cuda'` to run on GPU (requires a CUDA-enabled `jaxlib`; on macOS keep
+`'cpu'`). Output figures are written to `figs/`.
+
+To run a notebook headlessly:
+
+```bash
+jupyter nbconvert --to notebook --execute --inplace \
+    notebooks/train_private_spiderboost.ipynb
+```
 
 ## Hyperparameters (default)
 
@@ -89,6 +106,7 @@ Or open the notebook interactively. Output figures are written to
 | `b_2`          | 512     | Expected variation batch size (Poisson)                                |
 | `η`            | 0.05    | Learning rate                                                          |
 | `hidden_dims`  | (64,32) | MLP hidden-layer widths (LayerNorm + ReLU)                             |
+| `device`       | `"cpu"` | JAX device for training (`"cpu"` or `"cuda"`; see [src/device.py](src/device.py)) |
 
 Noise multipliers are derived from these via the closed-form
 expressions in Algorithm 2; see [src/privacy_accountant.py](src/privacy_accountant.py).
@@ -135,9 +153,20 @@ ones. In particular:
 - **Random output rule**: instead of reservoir sampling, draw
   `t* ~ Uniform({1,…,T})` up front and snapshot `w_{t*}` when reached.
   Equivalent for a fixed `T` and avoids per-step pytree copies.
-- **Train loss on batch**: logged as the mean BCE on the current
-  Poisson mini-batch (not the full training set) — a cheap per-step
-  proxy. ROC-AUC on the held-out test set is logged every `q` steps.
+- **Logging**: per-step training loss is the mean BCE on the current
+  Poisson mini-batch (cheap proxy, no extra data pass); test ROC-AUC
+  is computed every `q` steps; test loss is computed every
+  `progress_every` steps. Each progress line also reports the realised
+  Gaussian noise std applied at that step (`σ_1` for anchor steps,
+  `min(σ_2 · ‖Δw‖, σ̂_2)` for variation steps) and `‖Δw‖ = ‖w_t −
+  w_{t-1}‖`, so the anchor-vs-variation noise scaling and its
+  data-dependent shrinkage are visible during training.
+- **Device selection**: `TrainConfig.device` (and the `device=`
+  argument of `load_criteo`) accepts `"cpu"`, `"gpu"`, or `"cuda"`
+  (alias for `"gpu"`). The resolver in [src/device.py](src/device.py)
+  raises a clear error if CUDA is requested without a CUDA-enabled
+  `jaxlib`. The training loop places every per-step input on the
+  selected device; JIT compilation then follows automatically.
 - **LayerNorm, not BatchNorm**: BatchNorm would entangle samples in
   the gradient computation and break per-sample gradients in the DP
   setting. LayerNorm operates per-example.
@@ -145,7 +174,11 @@ ones. In particular:
 ## Files at a glance
 
 - [src/data_loader.py](src/data_loader.py) — Criteo loading,
-  `log(1+x)` and standardisation, 80/20 split.
+  `log(1+x)` and standardisation, 80/20 split; accepts `device=` to
+  place the returned arrays on a specific JAX device.
+- [src/device.py](src/device.py) — `resolve_device(name)` maps
+  `"cpu"`/`"gpu"`/`"cuda"` to a `jax.Device`, with a clean error when
+  the backend is unavailable.
 - [src/model.py](src/model.py) — vanilla-JAX MLP with LayerNorm and a
   numerically-stable BCE loss; exposes `per_sample_loss(params, x, y)`
   for use with `jax.vmap(jax.grad(...))`.
@@ -153,10 +186,23 @@ ones. In particular:
   utilities (per-sample clipping, mask, sum, scale, noise) and the two
   step kernels (`anchor_step`, `variation_step`).
 - [src/privacy_accountant.py](src/privacy_accountant.py) — closed-form
-  noise scales and an `dp_accounting`-backed RDP sanity check.
+  noise scales and a `dp_accounting`-backed RDP sanity check.
 - [src/train.py](src/train.py) — Poisson padded batching, JIT
-  compilation, history tracking, periodic AUC eval, output rule.
-- [src/visualization.py](src/visualization.py) — training-loss,
-  gradient-norm, ROC, AUC-history, and config-summary plots.
+  compilation, device placement, history tracking (per-step train loss
+  and gradient norm; periodic test loss and ROC-AUC), and the random
+  output rule. `evaluate_auc` and `evaluate_loss` stream the test set
+  in chunks.
+- [src/visualization.py](src/visualization.py) — `plot_training_loss`
+  (raw per-step loss + rolling-window overlay), `plot_test_loss`,
+  `plot_gradient_norm`, `plot_roc_curve`, `plot_auc_history`,
+  `plot_epsilon_sweep`, `plot_q_sweep`, and a config-summary table
+  figure. Each helper saves a PNG and returns the figure.
 - [notebooks/train_private_spiderboost.ipynb](notebooks/train_private_spiderboost.ipynb)
-  — driver: a config cell, a few function calls, and a final summary.
+  — single end-to-end run: a `DEVICE` cell, a config cell, function
+  calls, plots, and a final summary.
+- [notebooks/privacy_utility_tradeoff.ipynb](notebooks/privacy_utility_tradeoff.ipynb)
+  — sweeps an editable `EPSILONS` list, builds a pandas table, and
+  plots AUC vs ε (log x).
+- [notebooks/phase_length_q_tradeoff.ipynb](notebooks/phase_length_q_tradeoff.ipynb)
+  — sweeps an editable `Q_VALUES` list at fixed ε, builds a pandas
+  table, and plots AUC vs q.
