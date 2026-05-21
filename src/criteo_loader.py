@@ -1,52 +1,21 @@
-"""Criteo data loader for the Private SpiderBoost demo.
+"""Criteo-specific data loader.
 
-This module loads the 1M-row Criteo parquet, keeps only the 13 numerical
-features ``I1``..``I13`` (categorical features are ignored in this iteration),
-applies a ``log(1 + x)`` transform followed by per-feature standardisation,
-and returns JAX arrays split 80/20 into train and test.
+Loads the 1M-row Criteo parquet, keeps the 13 numerical features
+``I1``..``I13``, applies ``log(1 + x)`` and per-feature standardisation,
+and returns a :class:`TabularSplit` via :func:`arrays_to_split`.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import NamedTuple
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 
-from .device import resolve_device
+from .data_utils import TabularSplit, arrays_to_split
 
 INT_COLS: list[str] = [f"I{i}" for i in range(1, 14)]
 LABEL_COL: str = "label"
-
-
-class CriteoData(NamedTuple):
-    """Container for the train/test split.
-
-    Attributes
-    ----------
-    x_train : jnp.ndarray, shape (n_train, 13)
-        Standardised numerical features for training.
-    y_train : jnp.ndarray, shape (n_train,)
-        Binary labels in {0., 1.} for training.
-    x_test : jnp.ndarray, shape (n_test, 13)
-        Standardised numerical features for evaluation.
-    y_test : jnp.ndarray, shape (n_test,)
-        Binary labels in {0., 1.} for evaluation.
-    feature_means : np.ndarray, shape (13,)
-        Per-feature means used in standardisation (computed on train).
-    feature_stds : np.ndarray, shape (13,)
-        Per-feature standard deviations used in standardisation.
-    """
-
-    x_train: jnp.ndarray
-    y_train: jnp.ndarray
-    x_test: jnp.ndarray
-    y_test: jnp.ndarray
-    feature_means: np.ndarray
-    feature_stds: np.ndarray
 
 
 def load_criteo(
@@ -54,7 +23,7 @@ def load_criteo(
     test_fraction: float = 0.2,
     seed: int = 0,
     device: str = "cpu",
-) -> CriteoData:
+) -> TabularSplit:
     """Load the Criteo parquet, preprocess numerical features, and split.
 
     Parameters
@@ -71,9 +40,10 @@ def load_criteo(
 
     Returns
     -------
-    CriteoData
-        Train/test arrays plus the standardisation statistics. See the class
-        docstring for shapes.
+    TabularSplit
+        Train/test arrays. The standardisation statistics are exposed via
+        ``split.metadata["feature_means"]`` and
+        ``split.metadata["feature_stds"]``.
 
     Notes
     -----
@@ -83,14 +53,9 @@ def load_criteo(
     2. Fill NaN entries with the per-column median (computed on the training
        split to avoid test leakage).
     3. Apply ``log(1 + x)`` element-wise. Negative values are clipped to 0
-       beforehand (Criteo specifies that integer features are non-negative,
-       but a small number of NaN-filled rows could otherwise produce
-       non-physical inputs).
+       beforehand.
     4. Standardise to zero mean and unit variance using statistics from the
        training split.
-
-    The 80/20 split is performed by a fixed-seed permutation of the row
-    indices.
     """
     parquet_path = Path(parquet_path)
     if not parquet_path.exists():
@@ -124,12 +89,11 @@ def load_criteo(
     x_train_np = (x_train_np - means) / stds
     x_test_np = (x_test_np - means) / stds
 
-    dev = resolve_device(device)
-    return CriteoData(
-        x_train=jax.device_put(jnp.asarray(x_train_np), dev),
-        y_train=jax.device_put(jnp.asarray(y_train), dev),
-        x_test=jax.device_put(jnp.asarray(x_test_np), dev),
-        y_test=jax.device_put(jnp.asarray(y_test), dev),
-        feature_means=means,
-        feature_stds=stds,
+    return arrays_to_split(
+        x_train_np,
+        y_train,
+        x_test_np,
+        y_test,
+        device=device,
+        metadata={"feature_means": means, "feature_stds": stds},
     )

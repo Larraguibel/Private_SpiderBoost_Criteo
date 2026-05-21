@@ -116,6 +116,8 @@ class TrainConfig:
     seed: int = 0
     eval_every_steps: int | None = None
     device: str = "cpu"
+    output_dim: int = 1
+    eval_metric: str = "auc"
 
 
 @dataclass
@@ -180,6 +182,7 @@ class TrainResult(NamedTuple):
 
 
 def evaluate_loss(params, x_test: jnp.ndarray, y_test: jnp.ndarray,
+                  batch_loss_fn: Callable | None = None,
                   batch_size: int = 16384) -> float:
     """Mean BCE on the full test set, streamed in batches.
 
@@ -197,16 +200,19 @@ def evaluate_loss(params, x_test: jnp.ndarray, y_test: jnp.ndarray,
     loss : float
         ``(1 / n_test) * sum_i BCE(forward(params, x_i), y_i)``.
     """
+    if batch_loss_fn is None:
+        batch_loss_fn = model_mod.batch_bce_loss
     n = x_test.shape[0]
     total = 0.0
     for start in range(0, n, batch_size):
         end = min(start + batch_size, n)
         b = end - start
-        total += b * float(model_mod.batch_loss(params, x_test[start:end], y_test[start:end]))
+        total += b * float(batch_loss_fn(params, x_test[start:end], y_test[start:end]))
     return total / n
 
 
 def evaluate_auc(params, x_test: jnp.ndarray, y_test: jnp.ndarray,
+                 forward_fn: Callable | None = None,
                  batch_size: int = 16384) -> float:
     """Compute test ROC-AUC by streaming logits in batches.
 
@@ -224,11 +230,13 @@ def evaluate_auc(params, x_test: jnp.ndarray, y_test: jnp.ndarray,
     auc : float
         ``sklearn.metrics.roc_auc_score(y_true, y_scores)`` on logits.
     """
+    if forward_fn is None:
+        forward_fn = model_mod.forward
     n = x_test.shape[0]
     logits = []
     for start in range(0, n, batch_size):
         end = min(start + batch_size, n)
-        logits.append(np.asarray(model_mod.forward(params, x_test[start:end])))
+        logits.append(np.asarray(forward_fn(params, x_test[start:end])))
     y_scores = np.concatenate(logits)
     y_true = np.asarray(y_test)
     return float(roc_auc_score(y_true, y_scores))
@@ -246,6 +254,10 @@ def train(
     y_test: jnp.ndarray,
     config: TrainConfig,
     noise_scales: NoiseScales,
+    per_sample_loss_fn: Callable | None = None,
+    batch_loss_fn: Callable | None = None,
+    forward_fn: Callable | None = None,
+    init_params: object | None = None,
     progress_every: int = 50,
 ) -> TrainResult:
     """Run Private SpiderBoost end-to-end and return histories + final iterates.
@@ -277,6 +289,18 @@ def train(
     gathered, and the result is padded to the JIT-fixed shape with a
     secondary mask passed to the kernel.
     """
+    per_sample_loss_resolved = (
+        per_sample_loss_fn if per_sample_loss_fn is not None
+        else model_mod.per_sample_bce_loss
+    )
+    batch_loss_resolved = (
+        batch_loss_fn if batch_loss_fn is not None
+        else model_mod.batch_bce_loss
+    )
+    forward_resolved = (
+        forward_fn if forward_fn is not None else model_mod.forward
+    )
+
     dev = resolve_device(config.device)
     x_train = jax.device_put(x_train, dev)
     y_train = jax.device_put(y_train, dev)
@@ -288,18 +312,21 @@ def train(
     key = jax.random.PRNGKey(config.seed + 1)
 
     key, sub = jax.random.split(key)
-    params = model_mod.init_params(sub, d, config.hidden_dims)
+    if init_params is None:
+        params = model_mod.init_params(sub, d, config.hidden_dims)
+    else:
+        params = init_params
     params = jax.tree.map(lambda a: jax.device_put(a, dev), params)
 
     per_sample_grad_fn = jax.vmap(
-        jax.grad(model_mod.per_sample_loss),
+        jax.grad(per_sample_loss_resolved),
         in_axes=(None, 0, 0),
     )
     anchor_step = psb.make_anchor_step(per_sample_grad_fn)
     variation_step = psb.make_variation_step(per_sample_grad_fn)
     anchor_step_jit = jax.jit(anchor_step)
     variation_step_jit = jax.jit(variation_step)
-    batch_loss_jit = jax.jit(model_mod.batch_loss)
+    batch_loss_jit = jax.jit(batch_loss_resolved)
 
     b1_max = _poisson_padded_batch_size(config.b1, n)
     b2_max = _poisson_padded_batch_size(config.b2, n)
@@ -372,12 +399,13 @@ def train(
 
         # Periodic evaluation (after applying step t's update).
         if t > 0 and (t % eval_every == 0 or t == config.T):
-            auc = evaluate_auc(params, x_test, y_test)
-            history.eval_steps.append(t)
-            history.eval_auc.append(auc)
+            if config.eval_metric == "auc":
+                auc = evaluate_auc(params, x_test, y_test, forward_resolved)
+                history.eval_steps.append(t)
+                history.eval_auc.append(auc)
 
         if progress_every and (t % progress_every == 0 or t == config.T):
-            test_loss_val = evaluate_loss(params, x_test, y_test)
+            test_loss_val = evaluate_loss(params, x_test, y_test, batch_loss_resolved)
             history.test_loss_steps.append(t)
             history.test_loss.append(test_loss_val)
             # Realized Gaussian noise std added at *this* step:
@@ -385,18 +413,22 @@ def train(
             #   variation: min(sigma2 * ||w_t - w_{t-1}||, sigma2_hat).
             delta_w = float(delta_w_jax)
             kind = "ANCHOR" if is_anchor else "var"
-            last_auc = history.eval_auc[-1] if history.eval_auc else float("nan")
             if is_anchor:
                 realized_noise_std = float(noise_scales.sigma1)
             else:
                 realized_noise_std = float(
                     min(noise_scales.sigma2 * delta_w, noise_scales.sigma2_hat)
                 )
+            if config.eval_metric == "auc":
+                last_auc = history.eval_auc[-1] if history.eval_auc else float("nan")
+                metric_str = f"last_auc={last_auc:.4f}"
+            else:
+                metric_str = "metric=N/A"
             print(
                 f"  step {t:4d}/{config.T}  [{kind:6s}]  "
                 f"loss={train_loss_val:.4f}  test_loss={test_loss_val:.4f}  "
                 f"||∇_t||={grad_norm:.4f}  ||Δw||={delta_w:.4e}  "
-                f"noise_std={realized_noise_std:.4e}  last_auc={last_auc:.4f}"
+                f"noise_std={realized_noise_std:.4e}  {metric_str}"
             )
 
     history.wall_time_s = time.perf_counter() - t0

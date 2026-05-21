@@ -1,4 +1,4 @@
-"""Vanilla-JAX MLP with LayerNorm for binary classification.
+"""Vanilla-JAX MLP with LayerNorm.
 
 Parameters are stored as a plain pytree (a list of per-layer dicts plus a
 final-layer dict). All functions are pure and side-effect free, which makes
@@ -34,7 +34,7 @@ def init_params(
     key : jax.Array
         PRNG key used for weight initialization.
     input_dim : int
-        Number of input features (13 for the Criteo I-features).
+        Number of input features.
     hidden_dims : Sequence[int]
         Width of each hidden layer; ``len(hidden_dims)`` is the number of
         hidden Dense layers. Example: ``[64, 32]``.
@@ -107,7 +107,7 @@ def forward(params: dict, x: jax.Array) -> jax.Array:
     return logit
 
 
-def per_sample_loss(params: dict, x: jax.Array, y: jax.Array) -> jax.Array:
+def per_sample_bce_loss(params: dict, x: jax.Array, y: jax.Array) -> jax.Array:
     """Sigmoid binary cross-entropy loss for a single example.
 
     The loss is computed in a numerically-stable form, equivalent to
@@ -127,13 +127,13 @@ def per_sample_loss(params: dict, x: jax.Array, y: jax.Array) -> jax.Array:
     -------
     loss : jax.Array, shape ()
         Scalar BCE loss for this example. Suitable for
-        ``jax.vmap(jax.grad(per_sample_loss), in_axes=(None, 0, 0))``.
+        ``jax.vmap(jax.grad(per_sample_bce_loss), in_axes=(None, 0, 0))``.
     """
     logit = forward(params, x)
     return jnp.maximum(logit, 0.0) - logit * y + jnp.log1p(jnp.exp(-jnp.abs(logit)))
 
 
-def batch_loss(params: dict, x: jax.Array, y: jax.Array) -> jax.Array:
+def batch_bce_loss(params: dict, x: jax.Array, y: jax.Array) -> jax.Array:
     """Mean BCE loss over a batch (for monitoring, not for DP gradients).
 
     Parameters
